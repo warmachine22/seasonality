@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Seasonality Analysis</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.2/axios.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        button[type="submit"] {
+            background: #28a745;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button[type="submit"]:hover {
+            background: #218838;
+        }
+
+        #error {
+            color: red;
+            margin: 10px 0;
+        }
+
+        #loading {
+            display: none;
+            margin: 20px 0;
+        }
+
+        .summary-table {
+            width: 100%;
+            margin: 20px 0;
+            border-collapse: collapse;
+            background: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .summary-table th {
+            background: #f8f9fa;
+            padding: 12px;
+            border: 1px solid #dee2e6;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        .summary-table td {
+            padding: 12px;
+            border: 1px solid #dee2e6;
+        }
+
+        .summary-table tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .period-column {
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .details-table {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .details-table.visible {
+            display: block;
+        }
+
+        .details-table table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .details-table th, .details-table td {
+            padding: 8px;
+            border: 1px solid #dee2e6;
+            text-align: left;
+        }
+
+        .toggle-table {
+            background: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 20px 0;
+            display: block;
+            width: 100%;
+        }
+
+        .toggle-table:hover {
+            background: #0056b3;
+        }
+
+        .stock-header {
+            font-size: 1.5em;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #007bff;
+        }
+
+        .positive { color: green; }
+        .negative { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Stock Seasonality Analysis</h1>
+    
+    <form id="stockForm">
+        <div class="form-group">
+            <label for="apiKey">Alpha Vantage API Key:</label>
+            <input type="text" id="apiKey" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="symbol">Stock Symbol:</label>
+            <input type="text" id="symbol" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="date">Reference Date:</label>
+            <input type="date" id="date" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="days">Number of Days:</label>
+            <input type="number" id="days" min="1" max="365" value="365" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="years">Look Back Years (optional):</label>
+            <input type="number" id="years" min="1">
+        </div>
+        
+        <button type="submit">Analyze</button>
+    </form>
+
+    <div id="error"></div>
+    <div id="loading">Loading data...</div>
+    <div id="results"></div>
+
+    <script>
+        async function fetchStockData(symbol, apiKey) {
+            try {
+                const response = await axios.get(`https://www.alphavantage.co/query`, {
+                    params: {
+                        function: 'TIME_SERIES_DAILY',
+                        symbol: symbol,
+                        outputsize: 'full',
+                        apikey: apiKey
+                    }
+                });
+
+                const data = response.data['Time Series (Daily)'];
+                if (!data) {
+                    throw new Error('No data received from Alpha Vantage API');
+                }
+
+                return Object.entries(data).map(([date, values]) => ({
+                    date,
+                    price: parseFloat(values['4. close'])
+                })).sort((a, b) => new Date(a.date) - new Date(b.date));
+            } catch (error) {
+                throw new Error(`Failed to fetch stock data: ${error.message}`);
+            }
+        }
+
+        function calculateSeasonalReturns(data, referenceDate, numberOfDays, lookbackYears) {
+            const returns = [];
+            const refMonth = referenceDate.getMonth();
+            const refDay = referenceDate.getDate();
+
+            let currentYear = new Date(data[data.length - 1].date).getFullYear();
+            const earliestYear = lookbackYears ? 
+                Math.max(new Date(data[0].date).getFullYear(), currentYear - lookbackYears) :
+                new Date(data[0].date).getFullYear();
+
+            while (currentYear >= earliestYear) {
+                const startDate = new Date(currentYear, refMonth, refDay);
+                const endDate = new Date(startDate);
+                endDate.setDate(endDate.getDate() + numberOfDays);
+
+                const startIndex = data.findIndex(d => new Date(d.date) >= startDate);
+                const endIndex = data.findIndex(d => new Date(d.date) >= endDate);
+
+                if (startIndex !== -1 && endIndex !== -1) {
+                    const startPrice = data[startIndex].price;
+                    const endPrice = data[endIndex]?.price || data[data.length - 1].price;
+                    const returnPercent = ((endPrice - startPrice) / startPrice) * 100;
+
+                    returns.push({
+                        year: currentYear,
+                        startDate: data[startIndex].date,
+                        endDate: data[endIndex]?.date || data[data.length - 1].date,
+                        startPrice,
+                        endPrice,
+                        return: returnPercent
+                    });
+                }
+
+                currentYear--;
+            }
+
+            return returns;
+        }
+
+        function calculatePeriodStats(returns, years) {
+            const relevantReturns = returns.slice(0, years);
+            const averageReturn = relevantReturns.reduce((acc, val) => acc + val.return, 0) / relevantReturns.length;
+            const positiveReturnsCount = relevantReturns.filter(ret => ret.return >= 0).length;
+            const positiveReturnsPercentage = (positiveReturnsCount / relevantReturns.length) * 100;
+            
+            return {
+                averageReturn: averageReturn.toFixed(2),
+                successRate: positiveReturnsPercentage.toFixed(2),
+                totalPeriods: relevantReturns.length,
+                positivePeriods: positiveReturnsCount
+            };
+        }
+
+        function displayResults(returns, numberOfDays, symbol) {
+            const resultsDiv = document.getElementById('results');
+            
+            if (returns.length === 0) {
+                resultsDiv.innerHTML = 'No historical data found for this period.';
+                return;
+            }
+
+            const maxYears = returns.length;
+            const periodsToShow = [];
+            for (let i = 5; i <= maxYears; i += 5) {
+                periodsToShow.push(i);
+            }
+            if (!periodsToShow.includes(maxYears) && maxYears > 0) {
+                periodsToShow.push(maxYears);
+            }
+            periodsToShow.sort((a, b) => b - a);
+
+            let summaryTableHtml = `
+                <div class="stock-header">
+                    Analysis Results for ${symbol.toUpperCase()} (${numberOfDays}-Day Periods)
+                </div>
+                <table class="summary-table">
+                    <thead>
+                        <tr>
+                            <th>Time Period</th>
+                            <th>Average Return</th>
+                            <th>Success Rate</th>
+                            <th>Positive Periods</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            periodsToShow.forEach(years => {
+                const stats = calculatePeriodStats(returns, years);
+                summaryTableHtml += `
+                    <tr>
+                        <td class="period-column">${years}-Year Analysis</td>
+                        <td>${stats.averageReturn}%</td>
+                        <td>${stats.successRate}%</td>
+                        <td>${stats.positivePeriods} out of ${stats.totalPeriods} periods</td>
+                    </tr>
+                `;
+            });
+
+            summaryTableHtml += `
+                    </tbody>
+                </table>
+            `;
+
+            const returnsHtml = returns.map(ret => `
+                <tr>
+                    <td>${ret.year}</td>
+                    <td>${new Date(ret.startDate).toLocaleDateString()} to ${new Date(ret.endDate).toLocaleDateString()}</td>
+                    <td>$${ret.startPrice.toFixed(2)}</td>
+                    <td>$${ret.endPrice.toFixed(2)}</td>
+                    <td class="${ret.return >= 0 ? 'positive' : 'negative'}">${ret.return.toFixed(2)}%</td>
+                </tr>
+            `).join('');
+
+            resultsDiv.innerHTML = `
+                ${summaryTableHtml}
+                <button class="toggle-table" onclick="toggleDetailsTable()">Show Detailed Results</button>
+                <div class="details-table" id="detailsTable">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Year</th>
+                                <th>Period</th>
+                                <th>Start Price</th>
+                                <th>End Price</th>
+                                <th>Return</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${returnsHtml}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        function toggleDetailsTable() {
+            const table = document.getElementById('detailsTable');
+            const button = document.querySelector('.toggle-table');
+            const isVisible = table.classList.toggle('visible');
+            button.textContent = isVisible ? 'Hide Detailed Results' : 'Show Detailed Results';
+        }
+
+        document.getElementById('stockForm').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            
+            const errorDiv = document.getElementById('error');
+            const loadingDiv = document.getElementById('loading');
+            const resultsDiv = document.getElementById('results');
+            
+            errorDiv.innerHTML = '';
+            loadingDiv.style.display = 'block';
+            resultsDiv.innerHTML = '';
+            
+            try {
+                const apiKey = document.getElementById('apiKey').value.trim();
+                const symbol = document.getElementById('symbol').value.trim();
+                const referenceDate = new Date(document.getElementById('date').value);
+                const numberOfDays = parseInt(document.getElementById('days').value, 10);
+                const lookbackYears = document.getElementById('years').value ? 
+                    parseInt(document.getElementById('years').value, 10) : null;
+
+                if (!apiKey) throw new Error('Please enter an Alpha Vantage API key');
+                if (!symbol) throw new Error('Please enter a stock symbol');
+                if (isNaN(referenceDate.getTime())) throw new Error('Please enter a valid date');
+                if (isNaN(numberOfDays) || numberOfDays < 1 || numberOfDays > 365) {
+                    throw new Error('Please enter a number of days between 1 and 365');
+                }
+                if (lookbackYears && (isNaN(lookbackYears) || lookbackYears < 1)) {
+                    throw new Error('Please enter a valid number of years to look back');
+                }
+
+                const data = await fetchStockData(symbol, apiKey);
+                const returns = calculateSeasonalReturns(data, referenceDate, numberOfDays, lookbackYears);
+                displayResults(returns, numberOfDays, symbol);
+            } catch (error) {
+                errorDiv.innerHTML = error.message;
+            } finally {
+                loadingDiv.style.display = 'none';
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const savedApiKey = localStorage.getItem('alphavantageApiKey');
+            if (savedApiKey) {
+                document.getElementById('apiKey').value = savedApiKey;
+            }
+            document.getElementById('date').valueAsDate = new Date();
+        });
+    </script>
+</body>
+</html>
